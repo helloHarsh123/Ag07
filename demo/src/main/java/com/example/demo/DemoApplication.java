@@ -15,21 +15,21 @@ import com.example.demo.airegistry.repository.AgentRepository;
 @SpringBootApplication
 public class DemoApplication {
 
-	@Autowired
-	AgentRepository agentRepository;
+	// @Autowired
+	// AgentRepository agentRepository;
 	public static void main(String[] args) {
 		SpringApplication.run(DemoApplication.class, args);
 	}
 
 	// Just for testing purpose
-	@Bean
-	public CommandLineRunner insertAgent(ApplicationContext ctx){
-		return args->{
-			Agent agent = new Agent();
-			agent.setName("Testing Agent"+System.currentTimeMillis());
-			agentRepository.save(agent);
-		};
-	}
+	// @Bean
+	// public CommandLineRunner insertAgent(ApplicationContext ctx){
+	// 	return args->{
+	// 		Agent agent = new Agent();
+	// 		agent.setName("Testing Agent"+System.currentTimeMillis());
+	// 		agentRepository.save(agent);
+	// 	};
+	// }
 	
 
 }

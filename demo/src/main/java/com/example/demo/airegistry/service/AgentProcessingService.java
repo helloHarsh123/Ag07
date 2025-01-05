@@ -1,123 +1,113 @@
 package com.example.demo.airegistry.service;
 
-import com.example.demo.airegistry.dto.OpenAIRequest;
-import com.example.demo.airegistry.dto.OpenAIResponse;
 import com.example.demo.airegistry.model.Agent;
-import com.example.demo.airegistry.model.AgentProcessingStatus;
+import com.example.demo.airegistry.model.AgentEmbedding;
+import com.example.demo.airegistry.model.ApiDetails;
 import com.example.demo.airegistry.repository.AgentRepository;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import com.example.demo.airegistry.repository.AgentProcessingStatusRepository;
+import com.example.demo.airegistry.repository.AgentEmbeddingRepository;
+import dev.langchain4j.data.embedding.Embedding;
+import dev.langchain4j.model.huggingface.HuggingFaceEmbeddingModel;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
 import java.time.LocalDateTime;
-import java.util.Arrays;
 import java.util.List;
 
 @Service
 public class AgentProcessingService {
-
-    Logger logger = LoggerFactory.getLogger(AgentProcessingService.class);
     
     @Autowired
     private AgentRepository agentRepository;
     
     @Autowired
-    private AgentProcessingStatusRepository processingStatusRepository;
-    
+    private AgentEmbeddingRepository embeddingRepository;
+
     @Autowired
-    private RestTemplate openaiRestTemplate;
+    private HuggingFaceEmbeddingModel embeddingModel;
     
-    @Value("${openai.api.url}")
-    private String openaiApiUrl;
+    @Value("thenlper/gte-small")
+    private String modelId;
     
     public void processUnprocessedAgents() {
         List<Agent> activeAgents = agentRepository.findByActiveTrue();
-        
         for (Agent agent : activeAgents) {
-            logger.info(agent.getName());
-            AgentProcessingStatus status = processingStatusRepository
-                .findByAgentId(agent.getId())
-                .orElse(createNewProcessingStatus(agent));
-            
-            if (shouldProcess(status)) {
-                logger.info("processing: " + agent.getName());
-                processAgent(agent, status);
+            if (!embeddingRepository.findByAgentId(agent.getId()).isPresent()) {
+                processAgent(agent);
             }
         }
     }
     
-    private boolean shouldProcess(AgentProcessingStatus status) {
-        return status.getStatus() == AgentProcessingStatus.ProcessingStatus.FAILED || status.getStatus() == AgentProcessingStatus.ProcessingStatus.PENDING ||
-               (status.getStatus() == AgentProcessingStatus.ProcessingStatus.COMPLETED &&
-                status.getLastProcessedAt().plusHours(1).isBefore(LocalDateTime.now()));
-    }
-    
-    private AgentProcessingStatus createNewProcessingStatus(Agent agent) {
-        AgentProcessingStatus status = new AgentProcessingStatus();
-        status.setAgentId(agent.getId());
-        status.setStatus(AgentProcessingStatus.ProcessingStatus.PENDING);
-        return processingStatusRepository.save(status);
-    }
-    
-    private void processAgent(Agent agent, AgentProcessingStatus status) {
+    private void processAgent(Agent agent) {
         try {
-            status.setStatus(AgentProcessingStatus.ProcessingStatus.IN_PROGRESS);
-            status = processingStatusRepository.save(status);
+            String content = generateAgentContent(agent);
+            Embedding embedding = embeddingModel.embed(content).content();
             
-            String processingResult = processWithOpenAI(agent);
+            AgentEmbedding agentEmbedding = new AgentEmbedding();
+            agentEmbedding.setAgentId(agent.getId());
+            agentEmbedding.setContent(content);
+            agentEmbedding.setEmbedding(embedding.vectorAsList());
+            agentEmbedding.setCreatedAt(LocalDateTime.now());
             
-            status.setStatus(AgentProcessingStatus.ProcessingStatus.COMPLETED);
-            status.setProcessingResult(processingResult);
-            status.setLastProcessedAt(LocalDateTime.now());
-            status.setErrorMessage(null);
+            // Set metadata
+            AgentEmbedding.EmbeddingMetadata metadata = new AgentEmbedding.EmbeddingMetadata();
+            metadata.setModelId(modelId);
+            metadata.setDimensions(embedding.vector().length);
+            metadata.setGeneratedAt(LocalDateTime.now());
+            agentEmbedding.setMetadata(metadata);
+            
+            embeddingRepository.save(agentEmbedding);
             
         } catch (Exception e) {
-            status.setStatus(AgentProcessingStatus.ProcessingStatus.FAILED);
-            status.setErrorMessage(e.getMessage());
+            throw new RuntimeException("Failed to process agent: " + agent.getId(), e);
         }
-        
-        processingStatusRepository.save(status);
     }
     
-    private String processWithOpenAI(Agent agent) {
-        OpenAIRequest request = createOpenAIRequest(agent);
-        OpenAIResponse response = openaiRestTemplate.postForObject(
-            openaiApiUrl,
-            request,
-            OpenAIResponse.class
-        );
-        
-        if (response != null && !response.getChoices().isEmpty()) {
-            return response.getChoices().get(0).getMessage().getContent();
-        }
-        
-        throw new RuntimeException("Failed to get response from OpenAI");
-    }
-    
-    private OpenAIRequest createOpenAIRequest(Agent agent) {
-        OpenAIRequest request = new OpenAIRequest();
-        OpenAIRequest.Message systemMessage = new OpenAIRequest.Message();
-        systemMessage.setRole("system");
-        systemMessage.setContent("You are processing an AI agent with the following configuration. " +
-                               "Analyze its capabilities and provide insights.");
-        
-        OpenAIRequest.Message userMessage = new OpenAIRequest.Message();
-        userMessage.setRole("user");
-        userMessage.setContent(String.format(
-            "Agent Name: %s\nDescription: %s\nUse Cases: %s\nExample Prompts: %s",
+    private String generateAgentContent(Agent agent) {
+        ApiDetails apiDetails = agent.getApiDetails();
+        return String.format(
+            """
+            Agent Name: %s
+            Description: %s
+            Use Cases: %s
+            Example Prompts: %s
+            API Details:
+            - Endpoint: %s
+            - Auth Type: %s
+            - Version: %s
+            """,
             agent.getName(),
             agent.getDescription(),
-            String.join(", ", agent.getUseCases()),
-            String.join("\n", agent.getExamplePrompts())
-        ));
+            (agent.getUseCases()!=null && !agent.getUseCases().isEmpty())?String.join(", ", agent.getUseCases()):"",
+            (agent.getExamplePrompts()!=null && !agent.getExamplePrompts().isEmpty())?String.join("\n", agent.getExamplePrompts()):"",
+            (apiDetails!=null)?apiDetails.getEndpoint():"",
+            (apiDetails!=null)?apiDetails.getAuthType():"",
+            (apiDetails!=null)?apiDetails.getApiVersion():""
+        );
+    }
+    
+    // Method to find similar agents
+    public List<AgentEmbedding> findSimilarAgents(String agentId, int limit) {
+        AgentEmbedding sourceEmbedding = embeddingRepository.findByAgentId(agentId)
+            .orElseThrow(() -> new RuntimeException("Agent embedding not found"));
+            
+        return embeddingRepository.findSimilarEmbeddings(
+            sourceEmbedding.getEmbedding().stream()
+                .mapToDouble(Float::doubleValue)
+                .toArray(),
+            limit
+        );
+    }
+    
+    // Method to find similar agents by text query
+    public List<AgentEmbedding> findSimilarAgentsByText(String queryText, int limit) {
+        Embedding queryEmbedding = embeddingModel.embed(queryText).content();
         
-        request.setMessages(Arrays.asList(systemMessage, userMessage));
-        return request;
+        return embeddingRepository.findSimilarEmbeddings(
+            queryEmbedding.vectorAsList().stream()
+                .mapToDouble(Float::doubleValue)
+                .toArray(),
+            limit
+        );
     }
 }

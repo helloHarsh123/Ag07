@@ -1,0 +1,40 @@
+huggingface:
+  access:
+    token: ${HUGGING_FACE_ACCESS_TOKEN}
+spring:
+    application:
+        name: demo
+    jackson:
+        default-property-inclusion: non-null
+        serialization:
+         write-dates-as-timestamps: 'false'
+    data:
+        mongodb:
+            database: oneagent
+            uri: ${DB_URI}
+    ai:
+        vectorstore:
+            mongodb:
+                collection-name: agent_embeddings
+                # initialize-schema: true
+                path-name: embedding
+                indexName: vector_index
+        openai:
+            api-key: ${API_KEY_OPENAI}
+            chat:
+                options:
+                    model: gpt-3.5-turbo
+            embedding:
+                options:
+                    model: text-embedding-ada-002
+        mistralai:
+            api-key: ${MISTRAL_AI_API_KEY}
+            embedding:
+                options:
+                    model: mistral-embed
+        ollama:
+            embedding:
+                options:
+                    model: hf.co/thenlper/gte-small
+            chat:
+                model: hf.co/bartowski/gemma-2-2b-it-GGUF
